@@ -32,26 +32,30 @@ pub enum Sourced<T> {
     Value(T),
 }
 
+
 impl<T> Sourced<T>
 where
     T: FromStr,
     T: Clone,
     <T as FromStr>::Err: ToString,
 {
-    /// Resolves the configuration value to its concrete form.
+    /// Resolves the configuration value by parsing if sourced from an environment variable.
+    ///
+    /// Use this method when the target type `T` implements [`FromStr`] (e.g., numbers, booleans).
     ///
     /// # Returns
     /// - `Ok(T)` with direct value if using [`Sourced::Value`]
-    /// - `Ok(T)` with parsed environment variable value if using [`Sourced::Env`]
+    /// - `Ok(T)` with **parsed** environment variable value if using [`Sourced::Env`]
     ///
     /// # Errors
     /// - [`ExpliconError::Var`] if environment variable lookup fails
-    /// - [`ExpliconError::Other`] if environment variable value parsing fails
+    /// - [`ExpliconError::Other`] if environment variable value parsing fails (via [`FromStr`])
     pub fn resolve(&self) -> Result<T> {
         match self {
             Self::Value(value) => Ok(value.clone()),
             Self::Env(var_name) => {
-                let var_value = var(var_name)?;
+                let var_value = var(var_name)?; // Получаем String
+                // Используем parse, т.к. T: FromStr
                 let value = var_value
                     .parse::<T>()
                     .map_err(|e| ExpliconError::Other(e.to_string()))?;
@@ -60,12 +64,7 @@ where
         }
     }
 
-    /// Resolves the value or returns type's default if resolution fails.
-    ///
-    /// Useful for optional configuration values where a default is acceptable.
-    ///
-    /// # Returns
-    /// Resolved value or [`Default::default()`] if any error occurs during resolution
+     /// Resolves the value using `resolve()` or returns type's default if resolution fails.
     pub fn resolve_or_default(&self) -> Result<T>
     where
         T: Default,
@@ -73,30 +72,64 @@ where
         self.resolve().or_else(|_| Ok(T::default()))
     }
 
-    /// Resolves the value or returns the provided fallback value if resolution fails.
-    ///
-    /// # Returns
-    /// Resolved value or provided fallback value if any error occurs during resolution
+    /// Resolves the value using `resolve()` or returns the provided fallback value if resolution fails.
     pub fn resolve_or(&self, fallback: T) -> T {
         self.resolve().unwrap_or(fallback)
     }
 
-    /// Resolves the value and validates it against a predicate.
-    ///
-    /// # Arguments
-    /// * `validator` - Validation function that must return `true` for the value to be accepted
-    ///
-    /// # Returns
-    /// - `Ok(T)` if value passes validation
-    ///
-    /// # Errors
-    /// - Original resolution errors if any occur
-    /// - [`ExpliconError::Other`] with "Validation failed" message if validation fails
+    /// Resolves the value using `resolve()` and validates it against a predicate.
     pub fn resolve_and_validate<F>(&self, validator: F) -> Result<T>
     where
         F: FnOnce(&T) -> bool,
     {
         let value = self.resolve()?;
+        if validator(&value) {
+            Ok(value)
+        } else {
+            Err(ExpliconError::Other("Validation failed".into()))
+        }
+    }
+}
+
+impl<T> Sourced<T>
+where
+    T: From<String>,
+    T: Clone,
+{
+    /// Resolves the configuration value by converting directly from the environment variable string.
+    ///
+    /// Use this method when the target type `T` implements [`From<String>`] but not necessarily [`FromStr`]
+    /// (e.g., [`secrecy::SecretString`]).
+    ///
+    /// # Returns
+    /// - `Ok(T)` with direct value if using [`Sourced::Value`]
+    /// - `Ok(T)` with value created **directly via `From<String>`** from the environment variable if using [`Sourced::Env`]
+    ///
+    /// # Errors
+    /// - [`ExpliconError::Var`] if environment variable lookup fails. Conversion via `From<String>` is assumed infallible.
+    pub fn resolve_from_string(&self) -> Result<T> {
+        match self {
+            Self::Value(value) => Ok(value.clone()),
+            Self::Env(var_name) => {
+                let var_value = var(var_name)?; // Получаем String
+                // Используем From<String>, т.к. T: From<String>
+                Ok(T::from(var_value))
+            }
+        }
+    }
+
+     /// Resolves the value using `resolve_from_string()` or returns the provided fallback value.
+    /// Note: Does not return default, as `From<String>` types might not have a meaningful default.
+    pub fn resolve_from_string_or(&self, fallback: T) -> T {
+        self.resolve_from_string().unwrap_or(fallback)
+    }
+
+     /// Resolves the value using `resolve_from_string()` and validates it against a predicate.
+     pub fn resolve_from_string_and_validate<F>(&self, validator: F) -> Result<T>
+    where
+        F: FnOnce(&T) -> bool,
+    {
+        let value = self.resolve_from_string()?;
         if validator(&value) {
             Ok(value)
         } else {
